@@ -1,0 +1,825 @@
+#!/bin/bash
+
+declare -r arg0="$(basename "$0")" regpath="$HOME/.cache/gitman" reg_repos_delim=$'\a' reg_repos_delim_lit='\a' reg_repos_delim_2='"' reg_repos_delim_3=$'\t' reg_remotes_delim=$'\a' reg_remotes_delim_2=$'\t'
+declare git_targets=""
+
+declare -r f_remote_name=1 f_remote_script=2 f_remote_lastchange=3
+declare -r f_repo_path=1 f_repo_description=2 f_repo_tags=3 f_repo_remotes=4 f_repo_firstcommit=5 f_repo_lastcommit=6 f_repo_lastchange=7
+
+IFS=$'\n'
+
+pwarn() {
+    echo $@ >&2
+}
+
+perr() {
+    echo $@ >&2
+    exit 1
+}
+
+rerr() {
+    local comm="$1"
+    shift
+    "$comm" "$@" >&2
+    exit 1
+}
+
+escape_regex() {
+    sed 's/./[\0]/g; s/\[\[\]/\\[/g; s/\[\]\]/\\]/g' <<< "$1"
+}
+
+unknown_option() {
+    perr "unknown option '$1'"
+}
+
+reg_create() {
+    [ -f "$regpath" ] && return
+    printf '\n\n' > "$regpath" || perr "couldn't create a registry in '$regpath'"
+}
+
+reg_remotes() {
+    reg_create
+    head -n 1 "$regpath"
+}
+
+reg_remotes_s() {
+    reg_remotes | tr "$reg_remotes_delim" '\n'
+}
+
+reg_repos() {
+    reg_create
+    tail -n +2 "$regpath"
+}
+
+reg_remote_get_check() {
+    local path="$1"
+    shift
+    reg_remotes_s | grep "$@" "^$(escape_regex "$path")${reg_remotes_delim_2}"
+}
+
+reg_remote_get() {
+    local r="$(reg_remote_get_check "$@")"
+    [ -z "$r" ] && perr "remote alias \"$1\" doesn't exist"
+    echo "$r"
+}
+
+reg_repo_get_check() {
+    local path="$1"
+    shift
+    reg_repos | grep "$@" "^$(escape_regex "$path")${reg_repos_delim}"
+}
+
+reg_repo_path() {
+    reg_repos_field "$f_repo_path"
+}
+
+reg_repo_description() {
+    reg_repos_field "$f_repo_description"
+}
+
+reg_repo_tags() {
+    reg_repos_field "$f_repo_tags"
+}
+
+reg_repo_remotes() {
+    reg_repos_field "$f_repo_remotes"
+}
+
+reg_repo_firstcommit() {
+    reg_repos_field "$f_repo_firstcommit"
+}
+
+reg_repo_lastcommit() {
+    reg_repos_field "$f_repo_lastcommit"
+}
+
+reg_repo_lastchange() {
+    reg_repos_field "$f_repo_lastchange"
+}
+
+reg_repo_commits_check() {
+    local path="$1" r="$2" firstcommit="$3"
+    local fcommit="$firstcommit" fcommit_prev="$(reg_repo_firstcommit <<< "$r")"
+    [ -z "$fcommit" ] && fcommit="$(get_firstcommit "$path")"
+    if [ "$fcommit" != "$fcommit_prev" ]
+    then
+        pwarn "repo \"$path\" has different initial commit than registered (this might not be the same repo)"
+    elif [ -z "$firstcommit" -a -z "$fcommit_prev" ]
+    then
+        pwarn "repo \"$path\" has uninitialized commit values in registry"
+    elif commit_exists "$path" "$(reg_repo_lastcommit <<< "$r")" && false
+    then
+        pwarn "repo \"$path\" doesn't have the last commit that was saved in the register (it can be old)"
+    fi
+}
+
+reg_repo_get() {
+    local r="$(reg_repo_get_check "$@")"
+    [ -z "$r" ] && perr "repo \"$1\" doesn't exist in register"
+
+    reg_repo_commits_check "$1" "$r"
+
+    echo "$r"
+}
+
+str_with_delim() {
+    local -r delim="$1"
+    shift
+    [ -z "$delim" ] && return
+    [ "$#" -eq 0 ] && return
+    local out="$1"
+    shift
+    while [ "$#" -gt 0 ]
+    do
+        out+="${delim}$1"
+        shift
+    done
+    echo "$out"
+}
+
+reg_remotes_field() {
+    local fields="$1"
+    [ -z "$fields" ] && fields="1-"
+    cut -d "$reg_remotes_delim_2" -f "$fields"
+}
+
+reg_repos_field() {
+    local fields="$1"
+    [ -z "$fields" ] && fields="1-"
+    cut -d "$reg_repos_delim" -f "$fields"
+}
+
+reg_remotes_update() {
+    local -r prev="$1" new="$2" remotes
+    {
+    {
+        reg_remotes_s | grep -Fxv "$prev"
+        [ -n "$new" ] && echo "$new"
+    } | paste -sd "$reg_remotes_delim"
+    reg_repos
+    } | sponge "$regpath"
+}
+
+reg_repos_update() {
+    local -r prev="$1" new="$2"
+    {
+    reg_remotes
+    reg_repos | grep -Fxv "$prev"
+    [ -n "$new" ] && echo "$new"
+    } | sponge "$regpath"
+}
+
+targets() {
+    if [ -z "$git_targets" ]
+    then
+        get_root .
+    else
+        echo "$git_targets"
+    fi
+}
+
+targets_all() {
+    git_targets+="$(reg_repos | reg_repo_path)"
+}
+
+target_add() {
+    git_targets+="$(get_root "$1")"
+}
+
+get_root() {
+    local dir="$(realpath "$1")"
+    local r="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"
+    [ -z "$r" ] && perr "\"$dir\" isn't a git repository"
+    echo "$r"
+}
+
+get_lastchange() {
+    date '+%F %H:%M:%S'
+}
+
+commit_exists() {
+    git -C "$1" cat-file -e "$2"
+}
+
+get_firstcommit() {
+    git -C "$1" rev-list --all --max-parents=0
+}
+
+get_lastcommit() {
+    git -C "$1" rev-parse HEAD
+}
+
+#git rev-parse --show-toplevel #get root dir
+#git cat-file -e ee84b923e2422a7df44af8ae18b810849a5c5fce && something  #check if object exists
+#git rev-parse  HEAD #get id of the last commit
+#git rev-list --all --max-parents=0 # get id of the first commit
+
+# REPOSITORIES
+# path | name | description | TAG1"TAG... | REMOTE1`PATH"REMOTE`PATH... | FIRSTCOMMIT | LASTCOMMIT | lastchange
+# list of REMOTES and REMOTEPATHs has to be equivalent, if REMOTE is not define use NULL
+
+# REMOTES
+# name | script path | lastchange
+# script should have the url, create, delete commands
+# gh repo create
+
+comm_push_help() {
+    echo "$arg0 push [OPTION]..."
+    printf "  -h, --help\t\tprints this help message\n"
+}
+
+comm_push() {
+    [ "$1" = "-h" -o "$1" = "--help" ] && rerr comm_push_help
+    local i r j
+    for i in $(targets)
+    do
+        r="$(reg_repo_get "$i")"
+
+        for j in $(git -C "$i" remote)
+        do
+            if [ "$#" -eq 0 ]
+            then
+                git -C "$i" push "$j" "$(git -C "$i" branch --show-current)"
+            else
+                git -C "$i" push "$j" "$@"
+            fi
+        done
+    done
+}
+
+comm_add_help() {
+    echo "$arg0 add [OPTION]..."
+    printf "  -t, --tag TAG\t\t\tadds or removes TAGs, if this option is used more than once TAGs will be appended. TAGs can be separated by '|' in a single argument. If TAG is preceded by '-' then it will be removed.\n"
+    printf "  -d, --description DESC\t\tsets description to DESC\n"
+    printf "  -h, --help\t\tprints this help message\n"
+}
+
+get_repo_list() {
+    git -C "$1" remote -v | sed 's/ ([^)]*)$//' | sort -u | paste -sd "$reg_repos_delim_2"
+}
+
+comm_add_process_tags() {
+    local tags="$1" add="$2" remove="$3" i
+
+    tags="$(tr "$reg_repos_delim_2" '\n' <<< "$tags")"
+    [ -n "$add" ] && tags="$({ echo "$tags"; echo "$add"; } | sort -u)"
+
+    for i in $remove
+    do
+        tags="$(grep -xFv "$i" <<< "$tags")"
+    done
+
+    echo "$tags" | sed '/^$/d' | paste -sd "$reg_repos_delim_2"
+}
+
+comm_add() {
+    local i r t new arg_tags_add arg_tags_delete arg_description
+
+    while [ $# -gt 0 ]
+    do
+        case "$1" in
+            -t|--tag)
+                t="$(tr '|' '\n' <<< "$2" | sed -E 's/\|+/|/')"
+                shift
+                [ -z "$t" ] && continue
+                arg_tags_add="$({ grep -v '^-' <<< "$t"; echo "$arg_tags_add"; } | sort -u)"
+                arg_tags_delete="$({ sed -n '/^-/{s/^-//;p}' <<< "$t"; echo "$arg_tags_delete"; } | sort -u)";;
+            -d|--description)
+                arg_description="$2"
+                shift;;
+            -h|--help) rerr comm_add_help;;
+            *) unknown_option "$1";;
+        esac
+        shift
+    done
+
+    local lastchange nrepo_list
+    local firstcommit lastcommit
+    local description tags
+
+    for i in $(targets)
+    do
+        r="$(reg_repo_get_check "$i")"
+        lastchange="$(get_lastchange)"
+        nrepo_list="$(get_repo_list "$i")"
+        firstcommit="$(get_firstcommit "$i")"
+        lastcommit="$(get_lastcommit "$i")"
+        description="$arg_description"
+        tags=""
+
+        if [ -n "$r" ]
+        then
+            [ -z "$description" ] && description="$(reg_repo_description <<< "$r")"
+            tags="$(reg_repo_tags <<< "$r")"
+
+            reg_repo_commits_check "$i" "$r" "$firstcommit"
+        fi
+
+        tags="$(comm_add_process_tags "$tags" "$arg_tags_add" "$arg_tags_delete")"
+
+        new="$(str_with_delim "$reg_repos_delim" "$i" "$description" "$tags" "$nrepo_list" "$firstcommit" "$lastcommit" "$lastchange")"
+
+        #[ -n "$r" ] && [ "$(cut -d "$reg_repos_delim" -f -6 <<< "$new")" = "$(cut -d "$reg_repos_delim" -f -6 <<< "$r")" ] && continue
+        git -C "$i" config set gitweb.owner "$GITMAN_OWNER"
+        git -C "$i" config set gitweb.description "$description"
+        reg_repos_update "$r" "$new"
+
+        mscr_update "$new"
+    done
+}
+
+comm_move_help() {
+    echo "$arg0 move NAME"
+    printf "  -h, --help\t\tprints this help message\n"
+}
+
+comm_move() {
+    [ "$#" -ne 1 -o "$1" = "-h" -o "$1" = "--help" ] && rerr comm_move_help
+    local count=0 i r name="$1"
+    local path npath new
+
+    grep -Eq '/' <<< "$name" && perr "incorrect repo name \"$name\""
+
+    grep -Eq "^[^${reg_repos_delim_lit}]+/$(escape_regex "$name")${reg_repos_delim_lit}" <<< "$name" && perr "There already exists registered repo named \"$name\""
+
+    for i in $(targets)
+    do
+        [ "$count" -eq 1 ] && perr "refusing to rename more than one repository to the same name"
+        r="$(reg_repo_get "$i")"
+
+        path="$(reg_repo_path <<< "$r")"
+        npath="$(dirname "$path")/$name"
+
+        [ -e "$npath" ] && perr "path \"$path\" is already taken"
+
+        mv "$path" "$npath" || break
+
+        new="$(delim_field_replace "$reg_repos_delim" "$r" "$f_repo_path" "$npath")"
+
+        reg_repos_update "$r" "$new"
+
+        mscr_move "$new" "$name"
+
+        $((count++))
+    done
+}
+
+comm_delete_help() {
+    echo "$arg0 delete [OPTION]..."
+    printf "  -f, --force\t\tremove without prompt\n"
+    printf "  -h, --help\t\tprints this help message\n"
+}
+
+comm_delete() {
+    [ "$1" = "-h" -o "$1" = "--help" ] && rerr comm_delete_help
+    local i r ans force=0
+
+    while [ $# -gt 0 ]
+    do
+        case "$1" in
+            -f|--force)
+                force=1;;
+            -h|--help)
+                rerr comm_add_help;;
+        esac
+        shift
+    done
+
+    for i in $(targets)
+    do
+        r="$(reg_repo_get "$i")"
+        if [ "$force" -eq 0 ]
+        then
+            echo -n "Are you sure you want to delete $(reg_repo_path <<< "$r") (Y/n)? "
+            read -r ans
+            [ "$ans" != "Y" ] && return
+        fi
+
+        reg_repos_update "$r"
+
+        mscr_delete "$r"
+    done
+}
+
+comm_get_help() {
+    echo "$arg0 get [OPTION]..."
+
+    printf "  -h, --help\tprints this help message\n"
+
+    printf "\nMatching options (if none specified everything matches):\n"
+    echo "  --path EREGEX"
+    echo "  --description EREGEX"
+    echo "  --tags EREGEX"
+    echo "  --remote-name EREGEX"
+    echo "  --remote-path EREGEX"
+    echo "  --remote-date EREGEX"
+    echo "  --firstcommit EREGEX"
+    echo "  --lastcommit EREGEX"
+    echo "  --lastchange EREGEX"
+
+    printf "\nOutput options:\n"
+    echo "  --o-path"
+    echo "  --o-description"
+    echo "  --o-tags"
+    echo "  --o-remotes"
+    echo "  --o-firstcommit"
+    echo "  --o-lastcommit"
+    echo "  --o-lastchange"
+
+    echo
+    echo "Fields in line are separated by '\a'."
+    echo "Subfields like for --o-tags and --o-remotes are separated by '\"'."
+    echo "--o-remotes are finally separated by '\t'."
+}
+
+comm_get() {
+    [ "$#" -lt 1 ] && rerr comm_get_help
+    local r i outfields="" m_path m_description m_tags m_remote_name m_remote_path m_remote_date m_firstcommit m_lastcommit m_lastchange
+
+    while [ "$#" -gt 0 ]
+    do
+        case "$1" in
+            --o-path) outfields+="$f_repo_path,";;
+            --o-description) outfields+="$f_repo_description,";;
+            --o-tags) outfields+="$f_repo_tags,";;
+            --o-remotes) outfields+="$f_repo_remotes,";;
+            --o-firstcommit) outfields+="$f_repo_firstcommit,";;
+            --o-lastcommit) outfields+="$f_repo_lastcommit,";;
+            --o-lastchange) outfields+="$f_repo_lastchange,";;
+
+            --path) m_path="$2"; shift;;
+            --description) m_description="$2"; shift;;
+            --tags) m_tags="$2"; shift;;
+            --remote-name) m_remote_name="$2"; shift;;
+            --remote-path) m_remote_path="$2"; shift;;
+            --remote-date) m_remote_path="$2"; shift;;
+            --firstcommit) m_firstcommit="$2"; shift;;
+            --lastcommit) m_lastcommit="$2"; shift;;
+            --lastchange) m_lastchange="$2"; shift;;
+            -h|--help) rerr comm_get_help;;
+            *) unknown_option "$1";;
+        esac
+        shift
+    done
+
+    outfields="$(sed 's/,$//' <<< "$outfields")"
+
+    for i in $(reg_repos | reg_repo_path)
+    do
+        r="$(reg_repo_get "$i")"
+
+        [ -n "$m_path" ] && {
+            reg_repo_path <<< "$r" | grep -qE "$m_path" || continue
+        }
+        [ -n "$m_description" ] && {
+            reg_repo_description <<< "$r" | grep -qE "$m_description" || continue
+        }
+        [ -n "$m_tags" ] && {
+            reg_repo_tags <<< "$r" | tr "$reg_repos_delim_2" '\n' | grep -qE "$m_tags" || continue
+        }
+        [ -n "$m_remote_name" ] && {
+            reg_repo_remotes <<< "$r" | tr "$reg_repos_delim_2" '\n' | cut -d "$reg_repos_delim_3" -f 1 | grep -qE "$m_remote_name" || continue
+        }
+        [ -n "$m_remote_path" ] && {
+            reg_repo_remotes <<< "$r" | tr "$reg_repos_delim_2" '\n' | cut -d "$reg_repos_delim_3" -f 2 | grep -qE "$m_remote_path" || continue
+        }
+        [ -n "$m_remote_date" ] && {
+            reg_repo_remotes <<< "$r" | tr "$reg_repos_delim_2" '\n' | cut -d "$reg_repos_delim_3" -f 3 | grep -qE "$m_remote_date" || continue
+        }
+        [ -n "$m_firstcommit" ] && {
+            reg_repo_firstcommit <<< "$r" | grep -qE "$m_firstcommit" || continue
+        }
+        [ -n "$m_lastcommit" ] && {
+            reg_repo_lastcommit <<< "$r" | grep -qE "$m_lastcommit" || continue
+        }
+        [ -n "$m_lastchange" ] && {
+            reg_repo_lastchange <<< "$r" | grep -qE "$m_lastchange" || continue
+        }
+
+        reg_repos_field "$outfields" <<< "$r"
+    done
+}
+
+comm_remote_check_help() {
+    echo "$arg0 rcheck"
+    printf "  -h, --help\t\tprints this help message\n"
+}
+
+comm_remote_check() {
+    [ "$1" = "-h" -o "$1" = "--help" ] && rerr comm_remote_check_help
+    local i j r
+    for i in $(targets)
+    do
+        r="$(reg_remote_get "$1")"
+
+        for j in $(git -C "$i" remotes)
+        do
+            git -C "$i" ls-remote "$j" >/dev/null
+        done
+    done
+}
+
+comm_remote_add_help() {
+    echo "$arg0 radd NAME..."
+    echo "adds generated urls from managed remotes. If the first NAME is '-' then all remotes will be added."
+    printf "  -h, --help\t\tprints this help message\n"
+}
+
+comm_remote_add() {
+    [ "$#" -lt 1 -o "$1" = "-h" -o "$1" = "--help" ] && rerr comm_remote_add_help
+
+    local rlist url names="$(echo "$@" | tr ' ' '\n')"
+    [ "$1" == "-" ] && names="$(reg_remotes_s | reg_remote_name)"
+
+    local i j r
+    for i in $(targets)
+    do
+        r="$(reg_repo_get "$i")"
+        rlist="$(git -C "$i" remote)"
+
+        for j in $names
+        do
+            echo "$rlist" | grep -qFx "$j" && continue
+
+            url="$(mscr_url "$j" "$i")"
+            mscr_add "$j" "$url" "$r" || continue
+            git -C "$i" remote add "$j" "$url"
+        done
+    done
+}
+
+comm_remote_help() {
+    echo "$arg0 remote NAME SCRIPT"
+    echo "adds a scripted remote alias. SCRIPT is a path to the executable that conforms to the standard. If alias already exists then it changes path to the SCRIPT"
+    printf "\nThese options have to be specified as the first thing, they change the way of execution\n"
+    printf "  -d, --delete NAME\t\tdeletes alias\n"
+    printf "  -m, --move NAME NEWNAME\trenames alias\n"
+    printf "  -h, --help\t\tprints this help message\n"
+}
+
+reg_remote_name() {
+    reg_remotes_field "$f_remote_name"
+}
+
+reg_remote_script() {
+    reg_remotes_field "$f_remote_script"
+}
+
+reg_remote_lastchange() {
+    reg_remotes_field "$f_remote_lastchange"
+}
+
+remote_script_verify() {
+    [ -e "$1" ] || {
+        echo "doesn't exist"
+        return 1
+    }
+    [ -f "$1" ] || {
+        echo "isn't a file"
+        return 1
+    }
+    [ -x "$1" ] || {
+        echo "isn't an executable"
+        return 1
+    }
+
+    "$1" --test add >&2 || {
+        echo "remote script \"$1\": no add support"
+        return 1
+    }
+    "$1" --test url >&2 || {
+        echo "remote script \"$1\": no url support"
+        return 1
+    }
+    "$1" --test update >&2 || {
+        echo "remote script \"$1\": no update support"
+        return 1
+    }
+    "$1" --test move >&2 || {
+        echo "remote script \"$1\": no move support"
+        return 1
+    }
+    "$1" --test delete >&2 || {
+        echo "remote script \"$1\": no delete support"
+        return 1
+    }
+}
+
+comm_remote_info() {
+    local r="$(reg_remote_get "$1")"
+
+    echo "Name: $(reg_remote_name <<< "$r")"
+    local spath="$(reg_remote_script <<< "$r")"
+    local smsg="$(remote_script_verify "$spath")"
+    if [ -n "$smsg" ]
+    then
+        echo "Script: $spath ($smsg)"
+    else
+        echo "Script: $spath"
+    fi
+    echo "Last change: $(reg_remote_lastchange <<< "$r")"
+}
+
+delim_field_replace() {
+    local -r delim="$1" line="$2" field="$3" repl="$4"
+    local lowerf="$((field-1))" higherf="$((field+1))" fprev="" fafter
+    [ "$lowerf" -ne 0 ] && fprev=$(cut -d "$delim" -f "-$lowerf" <<< "$line")
+    fafter=$(cut -d "$delim" -f "${higherf}-" <<< "$line")
+    if [ -z "$fprev" ]
+    then
+        new="$(str_with_delim "$delim" "$repl" "$fafter")"
+    else
+        new="$(str_with_delim "$delim" "$fprev" "$repl" "$fafter")"
+    fi
+}
+
+comm_remote_assign() {
+    local r="$(reg_remote_get_check "$1")"
+    local new smsg
+
+    smsg="$(remote_script_verify "$2")"
+    [ -n "$smsg" ] && perr "$2 ($smsg)"
+
+    local path="$(realpath "$2")"
+    local lastchange="$(get_lastchange)"
+    if [ -z "$r" ]
+    then
+        new="$(str_with_delim "$reg_remotes_delim_2" "$1" "$path" "$lastchange")"
+    else
+        new="$(delim_field_replace "$reg_remotes_delim_2" "$r" "$f_remote_script" "$path")"
+        new="$(delim_field_replace "$reg_remotes_delim_2" "$new" "$f_remote_lastchange" "$lastchange")"
+    fi
+
+    reg_remotes_update "$r" "$new"
+}
+
+comm_remote_delete() {
+    local r="$(reg_remote_get "$1")"
+
+    reg_remotes_update "$r"
+
+    mscr_remote_delete "$1"
+}
+
+comm_remote_move() {
+    local name="$2" r="$(reg_remote_get "$1")" n="$(reg_remote_get_check "$name")"
+    [ -n "$n" ] && perr "remote '$name' already exists"
+
+    local lastchange="$(get_lastchange)"
+    local prevname="$(reg_remote_name <<< "$r")"
+    local new="$(delim_field_replace "$reg_remotes_delim_2" "$r" "$f_remote_name" "$name")"
+    new="$(delim_field_replace "$reg_remotes_delim_2" "$new" "$f_remote_lastchange" "$lastchange")"
+    reg_remotes_update "$r" "$new"
+
+    mscr_remote_move "$prevname" "$name"
+}
+
+comm_remote() {
+    [ "$#" -lt 1 ] && rerr comm_remote_help
+
+    case "$1" in
+        -d|--delete) comm_remote_delete "$2";;
+        -m|--move) comm_remote_move "$2";;
+        -h|--help) rerr comm_remote_help;;
+        -*) unknown_option "$1";;
+        *)
+            if [ "$#" -lt 2 ]
+            then
+                comm_remote_info "$1"
+            else
+                comm_remote_assign "$1" "$2"
+            fi;;
+    esac
+}
+
+comm_help() {
+    echo "$arg0 [OPTION]... [COMMAND]"
+    echo "manage git repositories"
+    printf "\nCommands:\n"
+    printf "  p, push\t\t\tpushes changes to remotes\n"
+    printf "  a, add\t\t\tadds or updates repository\n"
+    printf "  m, move\t\t\trenames repository and changes basename of repository's directory\n"
+    printf "  d, delete\t\t\tdeletes repository from registry\n"
+    printf "  g, get\t\t\treturns stored info about the repository\n"
+    printf "  radd, remote-add\t\tadds remotes from managed scripts\n"
+    printf "  rcheck, remote-check\t\tchecks access and unpushed changes\n"
+    printf "  r, remote\t\t\tmanages predefined remote types, doesn't affect repositories\n"
+    printf "  h, help\t\t\tprints this help message\n"
+    printf "\nEach command has its own options, you can read about them by calling it with --help option.\n"
+
+    printf "\nBefore specifying the command you can also use the following options:\n"
+    printf "  -h, --help\t\t\tprint this help message\n"
+    printf "  -d, --directory DIR\t\twork on DIR, it can be specified multiple times making this script working on multiple directories\n"
+    printf "  -a, --all\t\t\twork on all directories in registry\n"
+
+    printf "\nRegistry is stored in $HOME/.cache/gitman\n"
+}
+
+exec_mscr_matching() {
+    local i rpath name data="$1" url names="$2" comm="$3"
+    [ -z "$names" ] && names="$(reg_remotes_s | reg_remote_name)"
+    shift 3
+    for i in $(reg_repo_remotes <<< "$data" | tr "$reg_repos_delim_2" "\n")
+    do
+        name="$(cut -d "$reg_repos_delim_3" -f 1 <<< "$i")"
+        grep -Fxq "$name" <<< "$names" || continue
+        url="$(cut -d "$reg_repos_delim_3" -f 2 <<< "$i")"
+
+        rpath="$(reg_remote_get "$name" | reg_remote_script)"
+        "$rpath" "$comm" "$name" "$url" "$data" "$@"
+    done
+}
+
+mscr_add() {
+    local rpath="$(reg_remote_get "$1" | reg_remote_script)"
+    "$rpath" add "$@"
+}
+
+mscr_update() {
+    exec_mscr_matching "$1" "" update
+}
+
+mscr_move() {
+    exec_mscr_matching "$1" "" move "$2"
+}
+
+mscr_delete() {
+    exec_mscr_matching "$1" "" delete
+}
+
+mscr_url() {
+    local name="$1" path="$(basename "$2")"
+
+    local rpath="$(reg_remote_get "$name" | reg_remote_script)"
+
+    "$rpath" url "$name" "$path"
+}
+
+mscr_remote_delete() {
+    local i
+    for i in $(reg_repos)
+    do
+        exec_mscr_matching "$i" "$1" delete
+    done
+}
+
+mscr_remote_move() {
+    local i
+    for i in $(reg_repos)
+    do
+        exec_mscr_matching "$i" "$1" move "$2"
+    done
+}
+
+[ -z "$GITMAN_OWNER" ] && perr "env variable GITMAN_OWNER not set"
+
+comm=""
+
+if [ "$#" -eq 0 ]
+then
+    comm="help"
+else
+    while [ "$#" -gt 0 ]
+    do
+        case "$1" in
+            -d|--directory)
+                target_add "$2"
+                shift;;
+            -a|--all)
+                targets_all;;
+            -h|--help)
+                comm="help"
+                break;;
+            -*)
+                unknown_option "$1";;
+            *)
+                break;;
+        esac
+        shift
+    done
+
+    if [ -z "$comm" ]
+    then
+        [ "$#" -lt 1 ] && {
+            echo "no command was specified" >&2
+            exit 1
+        }
+
+        comm="$1"
+        shift
+    fi
+fi
+
+git_targets="$(sort -u <<< "$git_targets")"
+
+case "$comm" in
+    p|push) comm_push "$@";;
+    a|add) comm_add "$@";;
+    m|move) comm_move "$@";;
+    d|delete) comm_delete "$@";;
+    g|get) comm_get "$@";;
+    radd|remote-add) comm_remote_add "$@";;
+    rcheck|remote-check) comm_remote_check "$@";;
+    r|remote) comm_remote "$@";;
+    h|help) rerr comm_help "$@";;
+esac

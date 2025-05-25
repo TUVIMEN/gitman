@@ -1,0 +1,111 @@
+#!/bin/bash
+
+declare -r arg0="$(basename "$0")" reg_repos_delim=$'\a' reg_repos_delim_lit='\a' reg_repos_delim_2='"' reg_repos_delim_3=$'\t' reg_remotes_delim=$'\a'
+declare -r f_repo_path=1 f_repo_description=2 f_repo_tags=3 f_repo_remotes=4 f_repo_firstcommit=5 f_repo_lastcommit=6 f_repo_lastchange=7
+
+perr() {
+    echo $@ >&2
+    exit 1
+}
+
+reg_repos_field() {
+    local fields="$1"
+    [ -z "$fields" ] && fields="1-"
+    cut -d "$reg_repos_delim" -f "$fields"
+}
+
+reg_repo_path() {
+    reg_repos_field "$f_repo_path"
+}
+
+comm_add() {
+    local rname="$1" url="$2" data="$3"
+    [ "$#" -lt 3 ] && exit 1
+    exit 0
+}
+
+escape_regex() {
+    sed 's/./[\0]/g; s/\[\[\]/\\[/g; s/\[\]\]/\\]/g' <<< "$1"
+}
+
+comm_update() {
+    local rname="$1" url="$2" data="$3"
+    [ "$#" -lt 3 ] && exit 1
+
+    local -r fname="$GITMAN_GITOLITE_REPO/conf/gitolite.conf"
+    local -r repo_name="$(basename "$(reg_repo_path <<< "$data")")"
+    local -r description="$(reg_repos_field "$f_repo_description" <<< "$data")"
+
+    sed -iE "
+        /^ *repo $(escape_regex "$repo_name")( |$)/{
+            :x
+            s/.*//
+            N
+            s/"'\n'"//
+            /^ *repo /bc
+            bx
+        }
+        :c
+    "  "$fname"
+
+    printf "repo %s\n\tRW+ = %s\n\tR = gitweb\n\tconfig gitweb.owner=\"%s\"\n\tconfig gitweb.description=\"%s\"\n\n" \
+        "$repo_name" "$GITMAN_OWNER" "$GITMAN_OWNER" "$description" >> "$fname"
+
+    git -C "$GITMAN_GITOLITE_REPO" add "$fname"
+    git -C "$GITMAN_GITOLITE_REPO" commit -m update
+    git -C "$GITMAN_GITOLITE_REPO" push origin master
+}
+
+comm_move() {
+    local rname="$1" url="$2" data="$3" repo_name="$4"
+    [ "$#" -lt 4 ] && exit 1
+    exit 0
+}
+
+comm_delete() {
+    local rname="$1" url="$2" data="$3"
+    [ "$#" -lt 3 ] && exit 1
+    exit 0
+}
+
+comm_url() {
+    local rname="$1" repo_name="$2"
+    [ "$#" -lt 2 ] && exit 1
+
+    echo "git@127.0.0.1:$repo_name"
+}
+
+[ -z "$GITMAN_GITOLITE_REPO" ] && perr "env variable GITMAN_GITOLITE_REPO not set"
+[ -z "$GITMAN_OWNER" ] && perr "env variable GITMAN_OWNER not set"
+
+[ "$#" -lt 1 ] && exit 1
+
+if [ "$1" = "--test" ]
+then
+    [ "$#" -lt 2 ] && exit 1
+    case "$2" in
+        add) true;;
+        update) true;;
+        move) true;;
+        delete) true;;
+        url) true;;
+        *) exit 1;;
+    esac
+    exit 0
+fi
+
+declare comm="$1"
+shift
+case "$comm" in
+    add)
+        comm_add "$@";;
+    update)
+        comm_update "$@";;
+    move)
+        comm_move "$@";;
+    delete)
+        comm_delete "$@";;
+    url)
+        comm_url "$@";;
+    *) exit 1;;
+esac

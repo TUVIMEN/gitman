@@ -1,0 +1,113 @@
+#!/bin/bash
+
+declare -r arg0="$(basename "$0")" reg_repos_delim=$'\a' reg_repos_delim_lit='\a' reg_repos_delim_2='"' reg_repos_delim_3=$'\t' reg_remotes_delim=$'\a'
+declare -r f_repo_path=1 f_repo_description=2 f_repo_tags=3 f_repo_remotes=4 f_repo_firstcommit=5 f_repo_lastcommit=6 f_repo_lastchange=7
+
+[ -z "$GITMAN_GITHUB_USER" ] && {
+    echo "GITMAN_GITHUB_USER env var is not set" >&2
+    exit 1
+}
+
+reg_repos_field() {
+    local fields="$1"
+    [ -z "$fields" ] && fields="1-"
+    cut -d "$reg_repos_delim" -f "$fields"
+}
+
+reg_repo_path() {
+    reg_repos_field "$f_repo_path"
+}
+
+repo_exists() {
+    curl -s -D - "https://api.github.com/repos/$GITMAN_GITHUB_USER/$1" | grep -q '^HTTP/[^ ]* 404$'
+}
+
+comm_add() {
+    local rname="$1" url="$2" data="$3"
+    [ "$#" -lt 3 ] && exit 1
+    local path="$(reg_repo_path <<< "$data")"
+
+    gh repo create --public "$(basename "$path")"
+}
+
+to_api_url_conv() {
+    sed -E 's#^git@github.com:([^/]+)/([^/]+)\.git$#https://api.github.com/repos/\1/\2#' <<< "$1"
+}
+
+get_repo_topics() {
+    local url="$(to_api_url_conv "$1")"
+    curl -s "$url/topics" | jq -r '.names[]' | paste -sd ,
+}
+
+comm_update() {
+    local rname="$1" url="$2" data="$3"
+    [ "$#" -lt 3 ] && exit 1
+
+    if git ls-remote "$url" &>/dev/null
+    then
+        true
+    else
+        echo "coudn't connect to remote \"$url\"" >&2
+        exit 1
+    fi
+
+    gh repo edit --remove-topic "$(get_repo_topics "$url")" "$url"
+
+    gh repo edit --add-topic "$(reg_repos_field "$f_repo_tags" <<< "$data" | tr "$reg_repos_delim_2" ',' | sed 's/,$//;s/^,//')" \
+        --description "$(reg_repos_field "$f_repo_description" <<< "$data")" "$url"
+}
+
+comm_move() {
+    local rname="$1" url="$2" data="$3" repo_name="$4"
+    [ "$#" -lt 4 ] && exit 1
+
+    gh repo rename -R "$url" "$repo_name" || exit 1
+
+    local path="$(reg_repo_path <<< "$data")"
+    git -C "$path" remote set-url "$rname" "$(comm_url "" "$repo_name")"
+}
+
+comm_delete() {
+    local rname="$1" url="$2" data="$3"
+    [ "$#" -lt 3 ] && exit 1
+    gh repo delete "$url"
+}
+
+comm_url() {
+    local rname="$1" repo_name="$2"
+    [ "$#" -lt 2 ] && exit 1
+
+    echo "git@github.com:$GITMAN_GITHUB_USER/$repo_name.git"
+}
+
+[ "$#" -lt 1 ] && exit 1
+
+if [ "$1" = "--test" ]
+then
+    [ "$#" -lt 2 ] && exit 1
+    case "$2" in
+        add) true;;
+        update) true;;
+        move) true;;
+        delete) true;;
+        url) true;;
+        *) exit 1;;
+    esac
+    exit 0
+fi
+
+declare comm="$1"
+shift
+case "$comm" in
+    add)
+        comm_add "$@";;
+    update)
+        comm_update "$@";;
+    move)
+        comm_move "$@";;
+    delete)
+        comm_delete "$@";;
+    url)
+        comm_url "$@";;
+    *) exit 1;;
+esac
