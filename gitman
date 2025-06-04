@@ -1,4 +1,6 @@
 #!/bin/bash
+# by Dominik Stanisław Suchora <hexderm@gmail.com>
+# License: GNU GPLv3
 
 declare -r arg0="$(basename "$0")" regpath="$HOME/.cache/gitman" reg_repos_delim=$'\a' reg_repos_delim_lit='\a' reg_repos_delim_2='"' reg_repos_delim_3=$'\t' reg_remotes_delim=$'\a' reg_remotes_delim_2=$'\t'
 declare git_targets=""

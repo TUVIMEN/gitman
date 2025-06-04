@@ -1,4 +1,6 @@
 #!/bin/bash
+# by Dominik Stanisław Suchora <hexderm@gmail.com>
+# License: GNU GPLv3
 
 declare -r arg0="$(basename "$0")" reg_repos_delim=$'\a' reg_repos_delim_lit='\a' reg_repos_delim_2='"' reg_repos_delim_3=$'\t' reg_remotes_delim=$'\a'
 declare -r f_repo_path=1 f_repo_description=2 f_repo_tags=3 f_repo_remotes=4 f_repo_firstcommit=5 f_repo_lastcommit=6 f_repo_lastchange=7
