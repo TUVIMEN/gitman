@@ -362,7 +362,7 @@ comm_move() {
 
         mscr_move "$new" "$name"
 
-        $((count++))
+        ((count++))
     done
 }
 
