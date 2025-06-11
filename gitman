@@ -204,7 +204,7 @@ commit_exists() {
 }
 
 get_firstcommit() {
-    git -C "$1" rev-list --all --max-parents=0
+    git -C "$1" rev-list --all --max-parents=0 -n 1
 }
 
 get_lastcommit() {
@@ -214,7 +214,7 @@ get_lastcommit() {
 #git rev-parse --show-toplevel #get root dir
 #git cat-file -e ee84b923e2422a7df44af8ae18b810849a5c5fce && something  #check if object exists
 #git rev-parse  HEAD #get id of the last commit
-#git rev-list --all --max-parents=0 # get id of the first commit
+#git rev-list --all --max-parents=0 -n 1 # get id of the first commit
 
 # REPOSITORIES
 # path | name | description | TAG1"TAG... | REMOTE1`PATH"REMOTE`PATH... | FIRSTCOMMIT | LASTCOMMIT | lastchange
